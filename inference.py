@@ -246,7 +246,7 @@ def main():
     elif config["val"] == "sat":
         data = torch.load("./viecap_clean/test_sat_1k.pt")
         embedding, refs = data["clip_embedding"], [
-            tokenizer.decode(sent, skip_special_tokens=True) for sent in data["target"]
+            [tokenizer.decode(sent, skip_special_tokens=True)] for sent in data["target"]
         ]
 
     device = "cpu"
