@@ -269,7 +269,7 @@ def training_function(config):
                 )
                 break
 
-    accelerator.print(f">>>>>>> Min val loss: {min_val_loss} @ {min_val_loss_epoch}")
+    accelerator.print(f">>>>>>> {output_prefix} Min val loss: {min_val_loss} @ {min_val_loss_epoch}")
     return model
 
 
