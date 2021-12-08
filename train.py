@@ -270,10 +270,14 @@ def training_function(config):
                 break
 
     accelerator.print(f">>>>>>> {output_prefix} Min val loss: {min_val_loss} @ {min_val_loss_epoch}")
-    best_model_path = os.path.join(output_dir, f"{output_prefix}-{min_val_loss_epoch:03d}.pt"),
-    fname = f"{output_prefix}-{min_val_loss_epoch:03d}.pt"
-    os.system(f"gsutil cp {best_model_path} gs://binhvq/viecap_sat/{min_val_loss:.3f}_{fname}")
-    os.system(f"rm -rf {output_dir}/*.pt")
+
+    # Execute only on main process
+    if acclerator.is_local_main_process():
+        accelerator.print("Uploading model to gs")
+        best_model_path = os.path.join(output_dir, f"{output_prefix}-{min_val_loss_epoch:03d}.pt"),
+        fname = f"{output_prefix}-{min_val_loss_epoch:03d}.pt"
+        os.system(f"gsutil cp {best_model_path} gs://binhvq/viecap_sat/{min_val_loss:.3f}_{fname}")
+        os.system(f"rm -rf {output_dir}/*.pt")
     return model
 
 
