@@ -221,6 +221,7 @@ def main():
     )
     args = parser.parse_args()
     print(">>>>>>>>", args)
+    prefix_length = 10 # TODO hardcoded
 
     torch.set_num_threads(args.nthread)
 
