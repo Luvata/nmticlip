@@ -69,6 +69,8 @@ class MLP(nn.Module):
 
 
 class ClipCaptionModel(nn.Module):
+    """Both MLP and GPT are trainable"""
+
     def get_dummy_token(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """Generate prefix tokens, shape Bxprefix_length"""
         return torch.zeros(
@@ -108,6 +110,8 @@ class ClipCaptionModel(nn.Module):
 
 
 class ClipCaptionPrefix(ClipCaptionModel):
+    """GPT is frozen, only MLP is trainable"""
+
     def parameters(self, recurse: bool = True):
         return self.clip_project.parameters()
 
@@ -117,6 +121,31 @@ class ClipCaptionPrefix(ClipCaptionModel):
         return self
 
 
+def get_train_dataset(dataset_name, prefix_length=10):
+    if dataset_name == "viecap":
+        return ClipDataset("./viecap_clean/train_viecap_5k.pt", prefix_length)
+    elif dataset_name == "sat":
+        return ClipDataset("./viecap_clean/train_sat_5k.pt", prefix_length)
+    elif dataset_name == "both":
+        return ConcatDataset(
+            [
+                ClipDataset("./viecap_clean/train_viecap_5k.pt", prefix_length),
+                ClipDataset("./viecap_clean/train_sat_5k.pt", prefix_length),
+            ]
+        )
+    else:
+        raise ValueError("Unknown dataset name")
+
+
+def get_val_dataset(dataset_name, prefix_length=10):
+    if dataset_name == "viecap":
+        return ClipDataset("./viecap_clean/val_viecap_1k.pt", prefix_length)
+    elif dataset_name == "sat":
+        return ClipDataset("./viecap_clean/val_sat_1k.pt", prefix_length)
+    else:
+        raise ValueError("Unknown dataset name")
+
+
 def training_function(config):
     os.makedirs("./checkpoints", exist_ok=True)
     set_seed(config["seed"])
@@ -124,31 +153,44 @@ def training_function(config):
     accelerator.print(config)
 
     epochs = config["epochs"]
-    output_prefix = config["output_prefix"]
     output_dir = "checkpoints"
     prefix_length = config["prefix_length"]
 
-    # train_dataset = ClipDataset("./clean_split/torch/train_text_5k.pt", prefix_length)
-    # train_dataset = ClipDataset("./clean_split/torch/train_img_5k_torch.pt", prefix_length)
-    train_dataset = ConcatDataset([
-        ClipDataset("./viecap_clean/train_sat_5k.pt", prefix_length),
-        ClipDataset("./viecap_clean/train_viecap_5k.pt", prefix_length)
-    ])
-
-    # val_dataset = ClipDataset("./clean_split/torch/test_text_1k.pt", prefix_length)
-    val_dataset = ClipDataset("./viecap_clean/test_sat_1k.pt", prefix_length)
+    train_dataset = get_train_dataset(config["train_dataset"])
+    val_dataset = get_val_dataset(config["val_dataset"])
 
     accelerator.print(">>>>>>>>>", len(train_dataset), len(val_dataset))
+
     train_dataloader = DataLoader(
         train_dataset, batch_size=config["batch_size"], shuffle=True, drop_last=True
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=config["batch_size"], shuffle=False, drop_last=False
     )
-    accelerator.print(len(train_dataloader), len(val_dataloader))
 
+    output_prefix = (
+        config["model_type"]
+        + "_"
+        + config["train_dataset"]
+        + "_"
+        + config["val_dataset"]
+        + "_"
+        + "seed"
+        + str(config["seed"])
+    )
+
+    accelerator.print(len(train_dataloader), len(val_dataloader))
     accelerator.print("Loading models")
-    model = ClipCaptionModel(prefix_length)
+
+    if config["model_type"] == "mlp":
+        # Only train mapping network
+        model = ClipCaptionPrefix(prefix_length=prefix_length)
+        accelerator.print("Training only MLP")
+    elif config["model_type"] == "mlpgpt":
+        # Train both mapping and gpt
+        model = ClipCaptionModel(prefix_length)
+        accelerator.print("Training both MLP and GPT")
+
     model = model.to(accelerator.device)
     optimizer = AdamW(model.parameters(), lr=config["lr"])
     model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
@@ -161,6 +203,9 @@ def training_function(config):
         num_warmup_steps=5000,
         num_training_steps=epochs * len(train_dataloader),
     )
+
+    min_val_loss = float("inf")
+    min_val_loss_epoch = 0
 
     for epoch in range(epochs):
         accelerator.print(f">>> Training epoch {epoch}")
@@ -211,21 +256,51 @@ def training_function(config):
                         ignore_index=0,
                     )
                     val_loss.append(accelerator.gather(loss))
-            accelerator.print(epoch, ">>>>>>>>", torch.cat(val_loss).mean())
+            epoch_val_loss = torch.cat(val_loss).mean().item()
+            if epoch_val_loss < min_val_loss:
+                min_val_loss = epoch_val_loss
+                min_val_loss_epoch = epoch
+
+            accelerator.print(f"Epoch {epoch} val loss {epoch_val_loss}")
+
+            if epoch - min_val_loss_epoch > config["early_stopping"]:
+                accelerator.print(
+                    f">>>>>>> Early stopping at epoch {epoch}, Min val loss: {min_val_loss} @ {min_val_loss_epoch}"
+                )
+                break
+
+    accelerator.print(f">>>>>>> Min val loss: {min_val_loss} @ {min_val_loss_epoch}")
     return model
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=42)
+
+    ## Training parameters
+    parser.add_argument("--seed", type=int, default=1, choices=[1, 2, 3, 4, 5])
     parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch-size", type=int, default=64, help="Batchsize, 64 for V38, 32 for V28, and 16 for P100")
-    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Batchsize 32 for TPU v38 and v28, and 16 for P100",
+    )
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--val-every", type=int, default=1)
-    parser.add_argument("--output-prefix", type=str, default="nmt")
-    args = parser.parse_args()
+    parser.add_argument("--early-stopping", type=int, default=5)
 
+    ## Model and dataset config
+    parser.add_argument(
+        "--model-type", type=str, choices=["mlp", "mlpgpt"], required=True
+    )
+    parser.add_argument(
+        "--train-dataset", type=str, choices=["viecap", "sat", "both"], required=True
+    )
+    parser.add_argument(
+        "--val-dataset", type=str, choices=["viecap", "sat"], required=True
+    )
+    args = parser.parse_args()
 
     config = {
         "epochs": args.epochs,
@@ -235,7 +310,10 @@ def main():
         "prefix_length": 10,
         "save_every": args.save_every,
         "val_every": args.val_every,
-        "output_prefix": args.output_prefix,
+        "model_type": args.model_type,
+        "train_dataset": args.train_dataset,
+        "val_dataset": args.val_dataset,
+        "early_stopping": args.early_stopping,
     }
 
     training_function(config)
