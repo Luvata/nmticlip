@@ -139,9 +139,9 @@ def get_train_dataset(dataset_name, prefix_length=10):
 
 def get_val_dataset(dataset_name, prefix_length=10):
     if dataset_name == "viecap":
-        return ClipDataset("./viecap_clean/val_viecap_1k.pt", prefix_length)
+        return ClipDataset("./viecap_clean/test_viecap_1k.pt", prefix_length)
     elif dataset_name == "sat":
-        return ClipDataset("./viecap_clean/val_sat_1k.pt", prefix_length)
+        return ClipDataset("./viecap_clean/test_sat_1k.pt", prefix_length)
     else:
         raise ValueError("Unknown dataset name")
 
