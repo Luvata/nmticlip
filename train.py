@@ -272,7 +272,7 @@ def training_function(config):
     accelerator.print(f">>>>>>> {output_prefix} Min val loss: {min_val_loss} @ {min_val_loss_epoch}")
 
     # Execute only on main process
-    if accelerator.is_local_main_process():
+    if accelerator.is_local_main_process:
         accelerator.print("Uploading model to gs")
         best_model_path = os.path.join(output_dir, f"{output_prefix}-{min_val_loss_epoch:03d}.pt"),
         fname = f"{output_prefix}-{min_val_loss_epoch:03d}.pt"
