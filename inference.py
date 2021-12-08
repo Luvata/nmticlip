@@ -6,8 +6,15 @@ import torch
 import torch.nn.functional as nnf
 import sys
 from typing import Tuple, List, Union, Optional
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, AdamW, get_linear_schedule_with_warmup
+from transformers import (
+    GPT2Tokenizer,
+    GPT2LMHeadModel,
+    AdamW,
+    get_linear_schedule_with_warmup,
+)
 from tqdm import tqdm, trange
+import argparse
+from transformers import AutoTokenizer
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -29,34 +36,39 @@ TA = Union[T, ARRAY]
 
 
 class MLP(nn.Module):
-
     def forward(self, x: T) -> T:
         return self.model(x)
 
     def __init__(self, sizes: Tuple[int, ...], bias=True, act=nn.Tanh):
         super(MLP, self).__init__()
         layers = []
-        for i in range(len(sizes) -1):
+        for i in range(len(sizes) - 1):
             layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=bias))
             if i < len(sizes) - 2:
                 layers.append(act())
-#                 layers.append(nn.Dropout(p=0.1))
-                layers.append(nn.Dropout(p=0.2)) # update 17/10 20:00PM
+                #                 layers.append(nn.Dropout(p=0.1))
+                layers.append(nn.Dropout(p=0.2))  # update 17/10 20:00PM
 
         self.model = nn.Sequential(*layers)
 
 
 class ClipCaptionModel(nn.Module):
 
-    #@functools.lru_cache #FIXME
+    # @functools.lru_cache #FIXME
     def get_dummy_token(self, batch_size: int, device: D) -> T:
-        return torch.zeros(batch_size, self.prefix_length, dtype=torch.int64, device=device)
+        return torch.zeros(
+            batch_size, self.prefix_length, dtype=torch.int64, device=device
+        )
 
-    def forward(self, tokens: T, prefix: T, mask: Optional[T] = None, labels: Optional[T] = None):
+    def forward(
+        self, tokens: T, prefix: T, mask: Optional[T] = None, labels: Optional[T] = None
+    ):
         embedding_text = self.gpt.transformer.wte(tokens)
-        prefix_projections = self.clip_project(prefix).view(-1, self.prefix_length, self.gpt_embedding_size)
-        #print(embedding_text.size()) #torch.Size([5, 67, 768])
-        #print(prefix_projections.size()) #torch.Size([5, 1, 768])
+        prefix_projections = self.clip_project(prefix).view(
+            -1, self.prefix_length, self.gpt_embedding_size
+        )
+        # print(embedding_text.size()) #torch.Size([5, 67, 768])
+        # print(prefix_projections.size()) #torch.Size([5, 1, 768])
         embedding_cat = torch.cat((prefix_projections, embedding_text), dim=1)
         if labels is not None:
             dummy_token = self.get_dummy_token(tokens.shape[0], tokens.device)
@@ -67,16 +79,23 @@ class ClipCaptionModel(nn.Module):
     def __init__(self, prefix_length: int, prefix_size: int = 512):
         super(ClipCaptionModel, self).__init__()
         self.prefix_length = prefix_length
-        self.gpt = GPT2LMHeadModel.from_pretrained('gpt2')
+        self.gpt = GPT2LMHeadModel.from_pretrained("gpt2")
         self.gpt_embedding_size = self.gpt.transformer.wte.weight.shape[1]
         if prefix_length > 10:  # not enough memory
-            self.clip_project = nn.Linear(prefix_size, self.gpt_embedding_size * prefix_length)
+            self.clip_project = nn.Linear(
+                prefix_size, self.gpt_embedding_size * prefix_length
+            )
         else:
-            self.clip_project = MLP((prefix_size, (self.gpt_embedding_size * prefix_length) // 2, self.gpt_embedding_size * prefix_length))
+            self.clip_project = MLP(
+                (
+                    prefix_size,
+                    (self.gpt_embedding_size * prefix_length) // 2,
+                    self.gpt_embedding_size * prefix_length,
+                )
+            )
 
 
 class ClipCaptionPrefix(ClipCaptionModel):
-
     def parameters(self, recurse: bool = True):
         return self.clip_project.parameters()
 
@@ -86,12 +105,20 @@ class ClipCaptionPrefix(ClipCaptionModel):
         return self
 
 
-def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
-                  entry_length=67, temperature=1., stop_token: str = '.'):
+def generate_beam(
+    model,
+    tokenizer,
+    beam_size: int = 5,
+    prompt=None,
+    embed=None,
+    entry_length=67,
+    temperature=1.0,
+    stop_token: str = ".",
+):
 
     model.eval()
     stop_token_index = tokenizer.encode(stop_token)[0]
-#     stop_token_index = 0
+    #     stop_token_index = 0
 
     tokens = None
     scores = None
@@ -126,7 +153,9 @@ def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
                 scores_sum = scores[:, None] + logits
                 seq_lengths[~is_stopped] += 1
                 scores_sum_average = scores_sum / seq_lengths[:, None]
-                scores_sum_average, next_tokens = scores_sum_average.view(-1).topk(beam_size, -1)
+                scores_sum_average, next_tokens = scores_sum_average.view(-1).topk(
+                    beam_size, -1
+                )
                 next_tokens_source = next_tokens // scores_sum.shape[1]
                 seq_lengths = seq_lengths[next_tokens_source]
                 next_tokens = next_tokens % scores_sum.shape[1]
@@ -136,14 +165,19 @@ def generate_beam(model, tokenizer, beam_size: int = 5, prompt=None, embed=None,
                 generated = generated[next_tokens_source]
                 scores = scores_sum_average * seq_lengths
                 is_stopped = is_stopped[next_tokens_source]
-            next_token_embed = model.gpt.transformer.wte(next_tokens.squeeze()).view(generated.shape[0], 1, -1)
+            next_token_embed = model.gpt.transformer.wte(next_tokens.squeeze()).view(
+                generated.shape[0], 1, -1
+            )
             generated = torch.cat((generated, next_token_embed), dim=1)
             is_stopped = is_stopped + next_tokens.eq(stop_token_index).squeeze()
             if is_stopped.all():
                 break
     scores = scores / seq_lengths
     output_list = tokens.cpu().numpy()
-    output_texts = [tokenizer.decode(output[:int(length)]) for output, length in zip(output_list, seq_lengths)]
+    output_texts = [
+        tokenizer.decode(output[: int(length)])
+        for output, length in zip(output_list, seq_lengths)
+    ]
     order = scores.argsort(descending=True)
     output_texts = [output_texts[i] for i in order]
     return output_texts
@@ -157,17 +191,17 @@ def parse_model_str(gspath):
     seed = int(seed_and_epoch.split("-")[0][-1])
     return {
         "model_str": model_str,
-        "loss": loss, 
+        "loss": loss,
         "model_type": model_type,
-        "train": trainds, 
-        "val": valds, 
-        "seed": seed, 
-        "epoch": epoch
+        "train": trainds,
+        "val": valds,
+        "seed": seed,
+        "epoch": epoch,
     }
 
 
 def get_model_type_from_config(config):
-    if config["model_type"] == "mlp"
+    if config["model_type"] == "mlp":
         return ClipCaptionPrefix(10)
     elif config["model_type"] == "mlpgpt":
         return ClipCaptionModel(10)
@@ -175,8 +209,15 @@ def get_model_type_from_config(config):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model-str', type=str, required=True, help='Path to pretrained model in GS')
-    parser.add_argument('--nthread', type=int, default=4, help='Number of CPU threads for torch inference, default 4')
+    parser.add_argument(
+        "--model-str", type=str, required=True, help="Path to pretrained model in GS"
+    )
+    parser.add_argument(
+        "--nthread",
+        type=int,
+        default=4,
+        help="Number of CPU threads for torch inference, default 4",
+    )
     args = parser.parse_args()
     print(">>>>>>>>", args)
 
@@ -194,6 +235,7 @@ def main():
     model.eval()
 
     from datasets import load_metric
+
     metric = load_metric("sacrebleu")
 
     if config["val"] == "viecap":
@@ -201,7 +243,9 @@ def main():
         embedding, refs = data["clip_embedding"], data["target_sentence"]
     elif config["val"] == "sat":
         data = torch.load("./viecap_clean/test_sat_1k.pt")
-        embedding, refs = data["clip_embedding"], [tokenizer.decode(sent, skip_special_tokens=True) for sent in data["target"]]
+        embedding, refs = data["clip_embedding"], [
+            tokenizer.decode(sent, skip_special_tokens=True) for sent in data["target"]
+        ]
 
     device = "cpu"
     with torch.no_grad():
@@ -212,8 +256,9 @@ def main():
     predictions = [generate_beam(model, tokenizer, embed=i)[0] for i in tqdm(all_embed)]
     score = metric(predictions=predictions, references=refs)
     print(score)
+    score = score["score"]
     # write predictions to file with name of model_path and score
-    with open(f"{model_path}_{score["score"]}.txt", "w") as f:
+    with open(f"{model_path}_{score}.txt", "w") as f:
         for pred in predictions:
             f.write(pred + "\n")
 
