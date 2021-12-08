@@ -20,6 +20,7 @@ from transformers import AutoTokenizer
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+D = torch.device
 N = type(None)
 V = np.array
 ARRAY = np.ndarray
