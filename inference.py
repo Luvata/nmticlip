@@ -256,13 +256,12 @@ def main():
         print(all_embed.shape)
 
     predictions = [generate_beam(model, tokenizer, embed=i)[0] for i in tqdm(all_embed)]
-    score = metric.compute(predictions=predictions, references=refs)
-    print(score)
-    score = score["score"]
     # write predictions to file with name of model_path and score
-    with open(f"{model_path}_{score}.txt", "w") as f:
+    with open(f"{model_path}_predictions.txt", "w") as f:
         for pred in predictions:
             f.write(pred + "\n")
+    score = metric.compute(predictions=predictions, references=refs)
+    print(score)
 
 
 if __name__ == "__main__":
