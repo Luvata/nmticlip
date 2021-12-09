@@ -255,7 +255,7 @@ def main():
         all_embed = all_embed.view(all_embed.shape[0], 1, prefix_length, -1)
         print(all_embed.shape)
 
-    predictions = [generate_beam(model, tokenizer, embed=i)[0] for i in tqdm(all_embed)]
+    predictions = [generate_beam(model, tokenizer, embed=i)[0].split("\n")[0] for i in tqdm(all_embed)]
     # write predictions to file with name of model_path and score
     with open(f"{model_path}_predictions.txt", "w") as f:
         for pred in predictions:
